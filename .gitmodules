@@ -1,3 +1,6 @@
 [submodule "xelis-hash"]
 	path = xelis-hash
 	url = https://github.com/Grumm/xelis-hash.git
+[submodule "xelis-miner"]
+	path = xelis-miner
+	url = https://github.com/Grumm/xelis-miner.git

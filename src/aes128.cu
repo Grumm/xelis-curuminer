@@ -108,10 +108,11 @@ __host__ __device__ void shift_rows(block_t* block) {  // Performs shift rows op
     *block = out;
 }
 
-__host__ __device__ void sbox_substitute(block_t* block) { //Performs an S-box substitution on a block
-
+__host__ __device__ void sbox_substitute(block_t* block) {
+//Performs an S-box substitution on a block
     for (int i = 0; i < 16; i++) {
-        block->state->byte[i] = SBOX[block->state->byte[i]];
+        uint8_t index = block->state->byte[i];
+        block->state->byte[i] = SBOX[index];
     }
 }
 
@@ -135,4 +136,14 @@ __device__ void gpu_cipher(void* _block, void* _expandedkeys) {
     shift_rows((block + i));
     addroundkey((block + i),(expandedkeys + Nr));
 
+}
+
+__device__ void gpu_cipher_round(void* _block, void* _round_key) {
+    block_t *block = (block_t *)_block;
+    block_t *round_key = (block_t *)_round_key;
+
+    sbox_substitute(block);
+    shift_rows(block);
+    mix_columns(block); // Note: This should not be called in the final round
+    addroundkey(block, round_key);
 }
