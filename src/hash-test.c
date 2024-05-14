@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #include <gmp.h>
 
@@ -67,13 +68,15 @@ int verify_correctness(uint32_t seed, uint64_t num){
             &scratch_pad[i * MEMORY_SIZE]);
 
         if(memcmp(&cuda_hash[HASH_SIZE * i], cpu_hash.u, HASH_SIZE) != 0){
-            printf("For input ");
-            print_buffer(input_cpu, HASH_SIZE);
-            printf(" at index %ld incorrect hash\nCPU: ", i);
-            print_buffer(&cpu_hash, HASH_SIZE);
-            printf("\nGPU: ");
-            print_buffer(cuda_hash, HASH_SIZE);
-            printf("\n");
+            if(failed < 2){
+                printf("For input ");
+                print_buffer(input_cpu, HASH_SIZE);
+                printf(" at index %ld incorrect hash\nCPU: ", i);
+                print_buffer(&cpu_hash, HASH_SIZE);
+                printf("\nGPU: ");
+                print_buffer(cuda_hash, HASH_SIZE);
+                printf("\n");
+            }
             //return -1;
             failed++;
         }
@@ -206,45 +209,95 @@ uint64_t difficulty_from_hash(const uint8_t* hash_bytes) {
     return difficulty_uint64;
 }
 
-int verify_difficulty(uint32_t seed, size_t num, size_t iters, uint64_t nonce_start, uint64_t difficulty){
+struct mythr_data{
+    uint8_t *test_samples;
+    size_t iters;
+    size_t num;
+    size_t state;
+};
+
+void *worker_thread(void *_data){
+    struct mythr_data *data = _data;
+    uint8_t difficulty_buf[HASH_SIZE];
+    uint64_t output_nonce;
+    uint8_t output_hash[HASH_SIZE];
+    uint64_t nonce_start = 0;
+
+    for(size_t i = 0; i < data->iters; i++){
+        xelis_hash_cuda_nonce(data->test_samples, &nonce_start,
+            data->num, output_hash, &output_nonce,
+            difficulty_buf, 0, data->state);
+    }
+
+    DO_NOT_OPTIMIZE(output_hash);
+}
+
+int verify_difficulty(uint32_t seed, size_t num, size_t num_thr, size_t iters, uint64_t nonce_start, uint64_t difficulty){
     uint8_t output_hash[HASH_SIZE];
     uint64_t output_nonce;
-    uint8_t *test_samples = fill_mem(seed, 1);
+    uint8_t *test_samples = fill_mem(seed, num_thr);
     float time_taken;
     struct timespec start, end;
     uint8_t difficulty_buf[HASH_SIZE];
 
     compute_difficulty_target(difficulty, difficulty_buf);
 
-    printf("Benchmarking nonce with batch %ld for %ld iters\n", num, iters);
+    printf("Benchmarking nonce with batch %ld for %ld iters in %ld threads\n", num, iters, num_thr);
 
     //cuda
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    for(size_t i = 0; i < iters; i++){
-        xelis_hash_cuda_nonce(test_samples, &nonce_start,
-            num, output_hash, &output_nonce,
-            difficulty_buf, 0, 0);
+    pthread_t threads[128];
+    struct mythr_data _data[128];
+
+    for (int i = 0; i < num_thr; ++i){
+        _data[i].test_samples = &test_samples[i * KECCAK_WORDS];
+        _data[i].iters = iters;
+        _data[i].num = num;
+        _data[i].state = i;
     }
-    DO_NOT_OPTIMIZE(output_hash);
-    //DO_NOT_OPTIMIZE(&output_nonce);
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    if(num_thr == 1){
+        for(size_t i = 0; i < iters; i++){
+            xelis_hash_cuda_nonce(test_samples, &nonce_start,
+                num, output_hash, &output_nonce,
+                difficulty_buf, 0, 0);
+            DO_NOT_OPTIMIZE(output_hash);
+        }
+    }else {
+        for (int i = 0; i < num_thr; ++i)
+            pthread_create(&threads[i], NULL, worker_thread, &_data[i]);
+        for (int i = 0; i < num_thr; ++i)
+            pthread_join(threads[i], NULL);
+    }
     clock_gettime(CLOCK_MONOTONIC, &end);
     time_taken = end.tv_sec - start.tv_sec + (end.tv_nsec - start.tv_nsec) / 1e9;
 
-    printf("GPU: %.4fs\n", time_taken);
+    printf("GPU: %.4fs, %ldKH/s\n", time_taken, (uint64_t)(num * num_thr * iters / time_taken) / 1024);
     printf("Found hash with nonce %lu:\n", output_nonce);
     print_buffer(output_hash, HASH_SIZE);
     printf("\nDifficulty: %lu, expected %lu\n",
         difficulty_from_hash(output_hash), difficulty);
 }
 
+#define NUM_THREADS_PER_BLOCK 1024
+#define NUM_THREADS_PER_SM 1536
+#define NUM_BLOCKS_PER_SM 24
+#define NUM_SM 128
+#define NUM_SM_PER_KACCEK (NUM_SM / 8)
+#define NUM_THREADS_PER_BLOCK (NUM_THREADS_PER_SM / NUM_BLOCKS_PER_SM) //64
+#define MAX_NUM_BLOCKS NUM_BLOCKS_PER_SM * NUM_SM //3K
+#define MAX_NUM_THREADS NUM_SM * NUM_THREADS_PER_SM //196608
+//stage 1 pralellism: 1024
+
 int main() {
-    size_t batch_size = 2048;
-    size_t num_iters = 64 * 4;
-    initialize_cuda(batch_size, 1);
+    size_t num_iters = 10;
+    size_t num_threads = 1;
+    size_t batch_size = 1024 * 32;
+    initialize_cuda(batch_size, num_threads);
     verify_correctness(100, 256);
     srand(time(0));
     int seed = rand();
-    verify_difficulty(100, batch_size, 32, 0, 512);
+    verify_difficulty(100, batch_size, num_threads, num_iters, 0, 512);
     //benchmark_speed(100, batch_size, num_iters);
     deinitialize_cuda();
 }

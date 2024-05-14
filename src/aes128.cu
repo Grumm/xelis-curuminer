@@ -1,4 +1,4 @@
-//aes128.cu
+//Code taken from https://github.com/Rvch7/AES128_CUDA/blob/master/AES_CUDA/AES128_functions.cu
 
 #include <stdint.h>
 #include <cuda_runtime.h>
@@ -17,13 +17,13 @@ extern CONSTANT BYTE SBOX[256];
 #define BLOCKSIZE 16
 #define NUMOFKEYS 11
 
-//const char Nk = 4;	// Number of keys
-//const char Nb = 4;	// Number of words in a block
+//const char Nk = 4;    // Number of keys
+//const char Nb = 4;    // Number of words in a block
 const char Nr = 10; // Number of rounds
 
 struct word {
     BYTE byte[4];
-    __host__ __device__ word operator^(word x) {
+    __device__ word operator^(word x) {
         word z;
         z.byte[0] = x.byte[0] ^ this->byte[0];
         z.byte[1] = x.byte[1] ^ this->byte[1];
@@ -35,7 +35,7 @@ struct word {
 
 struct block_t {
     word state[4] = {};
-    __host__ __device__ block_t operator^(block_t x) {
+    __device__ block_t operator^(block_t x) {
         block_t z;
         z.state[0] = x.state[0] ^ this->state[0];
         z.state[1] = x.state[1] ^ this->state[1];
@@ -64,11 +64,11 @@ CONSTANT BYTE SBOX[256] = {
 ,0xe1 ,0xf8 ,0x98 ,0x11 ,0x69 ,0xd9 ,0x8e ,0x94 ,0x9b ,0x1e ,0x87 ,0xe9 ,0xce ,0x55 ,0x28 ,0xdf
 ,0x8c ,0xa1 ,0x89 ,0x0d ,0xbf ,0xe6 ,0x42 ,0x68 ,0x41 ,0x99 ,0x2d ,0x0f ,0xb0 ,0x54 ,0xbb ,0x16 };
 
-__host__ __device__ BYTE xtimes(BYTE x) {
+__device__ __forceinline__ BYTE xtimes(BYTE x) {
     return ((x << 1) ^ (((x >> 7) & 1) * 0x1b));
 }
 
-__host__ __device__ void mix_columns(block_t* block) {
+__device__ __forceinline__ void mix_columns(block_t* block) {
     block_t out;
 
     for (int i = 0; i < BLOCKSIZE; i += 4) {
@@ -81,7 +81,7 @@ __host__ __device__ void mix_columns(block_t* block) {
     *block = out;
 }
 
-__host__ __device__ void shift_rows(block_t* block) {  // Performs shift rows operation on a block
+__device__ __forceinline__ void shift_rows(block_t* block) {  // Performs shift rows operation on a block
     block_t out;
     //On per-row basis (+1 shift X each row)
     //Row 1
@@ -108,7 +108,7 @@ __host__ __device__ void shift_rows(block_t* block) {  // Performs shift rows op
     *block = out;
 }
 
-__host__ __device__ void sbox_substitute(block_t* block) {
+__device__ __forceinline__ void sbox_substitute(block_t* block) {
 //Performs an S-box substitution on a block
     for (int i = 0; i < 16; i++) {
         uint8_t index = block->state->byte[i];
@@ -116,13 +116,13 @@ __host__ __device__ void sbox_substitute(block_t* block) {
     }
 }
 
-__host__ __device__ void addroundkey(block_t* block, block_t* expandedkeys) {
+__device__ __forceinline__ void addroundkey(block_t* block, const block_t* expandedkeys) {
     *block = *block ^ *expandedkeys;
 }
 
 __device__ void gpu_cipher(void* _block, void* _expandedkeys) {
-	block_t *block = (block_t *)_block;
-	block_t *expandedkeys = (block_t *)_expandedkeys;
+    block_t *block = (block_t *)_block;
+    block_t *expandedkeys = (block_t *)_expandedkeys;
 
     unsigned int i = 0;
     addroundkey((block + i), expandedkeys);
@@ -138,12 +138,11 @@ __device__ void gpu_cipher(void* _block, void* _expandedkeys) {
 
 }
 
-__device__ void gpu_cipher_round(void* _block, void* _round_key) {
+__device__ void gpu_cipher_round(void* __restrict__ _block) {
     block_t *block = (block_t *)_block;
-    block_t *round_key = (block_t *)_round_key;
 
     sbox_substitute(block);
     shift_rows(block);
-    mix_columns(block); // Note: This should not be called in the final round
-    addroundkey(block, round_key);
+    mix_columns(block);
+    //addroundkey(block, round_key); - we assume key is always 0, so skipping this
 }
