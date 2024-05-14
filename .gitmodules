@@ -1,0 +1,3 @@
+[submodule "xelis-hash"]
+	path = xelis-hash
+	url = https://github.com/Grumm/xelis-hash.git
